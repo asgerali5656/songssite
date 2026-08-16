@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowUpRight, Heart, Pause, Play, Shuffle, SkipBack, SkipForward, Volume2 } from "lucide-react";
-import { FALLBACK_SONG_ID, Song, songs } from "@/data/songs";
+import { ArrowUpRight, Heart, Pause, Play, Search, Shuffle, SkipBack, SkipForward, Volume2, X, Music, Sparkles } from "lucide-react";
+import { DEFAULT_HINDI_SAD_QUERY, FALLBACK_SONG_ID, Song, songs as initialStaticSongs } from "@/data/songs";
+import { searchYouTubeSongs } from "@/services/youtubeApi";
 
 const fmt = (s: number) => {
   if (!Number.isFinite(s) || s < 0) return "0:00";
@@ -9,21 +10,23 @@ const fmt = (s: number) => {
   return `${m}:${r.toString().padStart(2, "0")}`;
 };
 
-const QUEUE_SIZE = 10;
+const QUEUE_SIZE = 15;
 const ONE_HOUR_MS = 60 * 60 * 1000; // 1 hour anti-repeat window
 
 /** Select a unique unplayed song not played within 1 hour and not in current queue */
 const getNextUniqueSong = (
+  songCatalog: Song[],
   history: Map<string, number>,
   currentQueue: Song[],
   currentTrackId?: string
 ): Song => {
+  const catalog = songCatalog && songCatalog.length > 0 ? songCatalog : initialStaticSongs;
   const now = Date.now();
   const queuedIds = new Set(currentQueue.map((s) => s.id));
   if (currentTrackId) queuedIds.add(currentTrackId);
 
   // Filter candidate songs not played in 1 hour and not currently queued
-  const validCandidates = songs.filter((s) => {
+  const validCandidates = catalog.filter((s) => {
     if (queuedIds.has(s.id)) return false;
     const lastPlayed = history.get(s.id);
     return !lastPlayed || now - lastPlayed >= ONE_HOUR_MS;
@@ -34,10 +37,10 @@ const getNextUniqueSong = (
     return validCandidates[rand]!;
   }
 
-  // Fallback: pick oldest played song not in current queue
-  let oldestSong = songs[0]!;
+  // Fallback: pick oldest played song
+  let oldestSong = catalog[0]!;
   let oldestTime = Infinity;
-  for (const s of songs) {
+  for (const s of catalog) {
     if (queuedIds.has(s.id)) continue;
     const t = history.get(s.id) ?? 0;
     if (t < oldestTime) {
@@ -48,35 +51,23 @@ const getNextUniqueSong = (
   return oldestSong;
 };
 
-/** Populate initial 10-song queue in advance */
+/** Populate initial 15-song queue in advance */
 const fillInitialQueue = (
+  songCatalog: Song[],
   initialTrackId: string,
   history: Map<string, number>
 ): Song[] => {
   const queue: Song[] = [];
   for (let i = 0; i < QUEUE_SIZE; i++) {
-    const nextSong = getNextUniqueSong(history, queue, initialTrackId);
+    const nextSong = getNextUniqueSong(songCatalog, history, queue, initialTrackId);
     queue.push(nextSong);
   }
   return queue;
 };
 
-const getInitialSongIndex = (): number => {
-  if (typeof window === "undefined") return 0;
-  try {
-    const saved = localStorage.getItem("bhopuriyaghulam_last_song_idx");
-    if (saved !== null) {
-      const lastIdx = parseInt(saved, 10);
-      if (!isNaN(lastIdx) && lastIdx >= 0 && lastIdx < songs.length) {
-        let rand = Math.floor(Math.random() * songs.length);
-        if (rand === lastIdx) rand = (rand + 1) % songs.length;
-        return rand;
-      }
-    }
-  } catch (e) {
-    // localStorage fallback
-  }
-  return Math.floor(Math.random() * songs.length);
+const getInitialSongIndex = (catalog: Song[]): number => {
+  if (typeof window === "undefined" || !catalog.length) return 0;
+  return Math.floor(Math.random() * catalog.length);
 };
 
 interface JukeboxPlayerProps {
@@ -84,8 +75,30 @@ interface JukeboxPlayerProps {
   onTrackChange?: (index: number) => void;
 }
 
-/** Synchronous Mobile Player Engine with Zero-Delay Touch Execution */
+/** Synchronous Mobile Player Engine with Seamless Inline Search & Unlimited Live YouTube Streaming for Hindi Sad Songs */
 export function JukeboxPlayer({ currentIndex, onTrackChange }: JukeboxPlayerProps) {
+  const [catalog, setCatalog] = useState<Song[]>(initialStaticSongs);
+
+  // Unlimited Auto-Expanding Live YouTube Data API Streamer for Hindi Sad Songs
+  useEffect(() => {
+    let isCancelled = false;
+
+    // Fetch 50 live YouTube Data API songs matching Hindi Sad Songs query
+    searchYouTubeSongs(DEFAULT_HINDI_SAD_QUERY, 50).then(({ songs: liveSongs }) => {
+      if (isCancelled || !liveSongs.length) return;
+
+      setCatalog((prev) => {
+        const existingIds = new Set(prev.map((s) => s.id));
+        const newUnique = liveSongs.filter((s) => !existingIds.has(s.id));
+        return [...prev, ...newUnique];
+      });
+    });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, []);
+
   const hostRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<any>(null);
 
@@ -93,22 +106,28 @@ export function JukeboxPlayer({ currentIndex, onTrackChange }: JukeboxPlayerProp
   const consecutiveErrorCountRef = useRef<number>(0);
   const userTouchedRef = useRef<boolean>(false);
 
+  // Inline Search Panel Toggle State (Seamless Within-Page Drawer)
+  const [isSearchExpanded, setIsSearchExpanded] = useState(false);
+  const [searchQueryInput, setSearchQueryInput] = useState("");
+  const [searchResults, setSearchResults] = useState<Song[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+
   // Map of song ID -> timestamp played (in ms) to enforce 1-hour anti-repeat
   const playedHistoryRef = useRef<Map<string, number>>(new Map());
 
   // Active playing track
   const [currentTrack, setCurrentTrack] = useState<Song>(() => {
-    const initIdx = typeof currentIndex === "number" && currentIndex >= 0 && currentIndex < songs.length
+    const initIdx = typeof currentIndex === "number" && currentIndex >= 0 && currentIndex < catalog.length
       ? currentIndex
-      : getInitialSongIndex();
-    const s = songs[initIdx] || songs[0]!;
+      : getInitialSongIndex(catalog);
+    const s = catalog[initIdx] || catalog[0]!;
     playedHistoryRef.current.set(s.id, Date.now());
     return s;
   });
 
-  // 10-Song Pre-Buffered Queue Array
+  // 15-Song Pre-Buffered Queue Array
   const [upcomingQueue, setUpcomingQueue] = useState<Song[]>(() => {
-    return fillInitialQueue(currentTrack.id, playedHistoryRef.current);
+    return fillInitialQueue(catalog, currentTrack.id, playedHistoryRef.current);
   });
 
   const [ready, setReady] = useState(false);
@@ -117,7 +136,44 @@ export function JukeboxPlayer({ currentIndex, onTrackChange }: JukeboxPlayerProp
   const [duration, setDuration] = useState(0);
   const [requiresUserTap, setRequiresUserTap] = useState(false);
 
-  // Advance to next song by popping front of 10-song queue & replenishing back of queue
+  // Play a specific song directly from search results
+  const playDirectSong = (song: Song) => {
+    userTouchedRef.current = true;
+    setCurrentTrack(song);
+    playedHistoryRef.current.set(song.id, Date.now());
+
+    setCatalog((prev) => {
+      if (prev.some((s) => s.id === song.id)) return prev;
+      return [song, ...prev];
+    });
+
+    try {
+      const p = playerRef.current;
+      if (p?.loadVideoById) {
+        p.unMute?.();
+        p.setVolume?.(100);
+        p.loadVideoById({
+          videoId: song.id || FALLBACK_SONG_ID,
+          startSeconds: 0,
+        });
+        p.playVideo?.();
+      }
+    } catch (e) {
+      // ignore
+    }
+  };
+
+  // Perform live YouTube API search for inline drawer with 25 results
+  const handleInlineSearchSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!searchQueryInput.trim()) return;
+    setIsSearching(true);
+    const { songs: results } = await searchYouTubeSongs(searchQueryInput.trim(), 25);
+    setSearchResults(results);
+    setIsSearching(false);
+  };
+
+  // Advance to next song by popping front of queue & replenishing back of queue
   const advanceToNextTrack = useCallback(() => {
     if (bufferWatchdogRef.current) {
       clearTimeout(bufferWatchdogRef.current);
@@ -127,7 +183,7 @@ export function JukeboxPlayer({ currentIndex, onTrackChange }: JukeboxPlayerProp
     setUpcomingQueue((prevQueue) => {
       let queue = prevQueue;
       if (queue.length === 0) {
-        queue = fillInitialQueue(currentTrack.id, playedHistoryRef.current);
+        queue = fillInitialQueue(catalog, currentTrack.id, playedHistoryRef.current);
       }
 
       const [nextSong, ...restQueue] = queue;
@@ -152,17 +208,17 @@ export function JukeboxPlayer({ currentIndex, onTrackChange }: JukeboxPlayerProp
         }
 
         try {
-          const songIdx = songs.findIndex((s) => s.id === nextSong.id);
+          const songIdx = catalog.findIndex((s) => s.id === nextSong.id);
           if (songIdx >= 0) {
-            localStorage.setItem("bhopuriyaghulam_last_song_idx", songIdx.toString());
             onTrackChange?.(songIdx);
           }
         } catch (e) {
           // ignore storage errors
         }
 
-        // Replenish queue to keep exactly 10 songs in advance
+        // Replenish queue to keep exactly 15 songs in advance
         const newReplenishment = getNextUniqueSong(
+          catalog,
           playedHistoryRef.current,
           restQueue,
           nextSong.id
@@ -171,7 +227,7 @@ export function JukeboxPlayer({ currentIndex, onTrackChange }: JukeboxPlayerProp
       }
       return prevQueue;
     });
-  }, [currentTrack.id, onTrackChange]);
+  }, [catalog, currentTrack.id, onTrackChange]);
 
   const prev = useCallback(() => {
     userTouchedRef.current = true;
@@ -418,17 +474,83 @@ export function JukeboxPlayer({ currentIndex, onTrackChange }: JukeboxPlayerProp
       {requiresUserTap && !playing && (
         <button
           onClick={toggle}
-          className="fixed bottom-36 left-1/2 z-50 flex -translate-x-1/2 items-center gap-2 rounded-full border border-primary/50 bg-primary/95 px-5 py-2.5 text-xs font-bold text-primary-foreground shadow-2xl backdrop-blur-md transition-transform hover:scale-105 active:scale-95 animate-pulse"
+          className="fixed bottom-36 left-1/2 z-50 flex -translate-x-1/2 items-center gap-2 rounded-full border border-rose-500/50 bg-rose-600/95 px-5 py-2.5 text-xs font-bold text-white shadow-2xl backdrop-blur-md transition-transform hover:scale-105 active:scale-95 animate-pulse"
         >
           <Volume2 className="h-4 w-4 shrink-0" />
           <span>गाना बजाईं (Tap to Play Radio)</span>
         </button>
       )}
 
-      {/* Container for Credit and Player Bar */}
-      <div className="flex w-full flex-col items-center justify-center gap-3.5 sm:gap-3">
+      {/* Container for Player, Search Panel, and Credit */}
+      <div className="flex w-full flex-col items-center justify-center gap-3">
+        {/* Seamless Within-Page Inline Search Drawer (expands inline directly above player) */}
+        {isSearchExpanded && (
+          <div className="w-[min(94vw,36rem)] overflow-hidden rounded-3xl border border-white/20 bg-slate-900/90 p-4 shadow-2xl backdrop-blur-2xl transition-all duration-300 animate-in fade-in slide-in-from-bottom-3">
+            <div className="mb-3 flex items-center justify-between border-b border-white/10 pb-2.5">
+              <span className="flex items-center gap-2 text-xs font-bold text-white uppercase tracking-wider">
+                <Sparkles className="h-4 w-4 text-rose-400" />
+                <span>Search Hindi Sad Songs</span>
+                <span className="rounded-full bg-rose-500/20 px-2 py-0.5 text-[10px] font-semibold text-rose-300">
+                  {catalog.length} Songs Loaded
+                </span>
+              </span>
+              <button
+                onClick={() => setIsSearchExpanded(false)}
+                className="rounded-full bg-white/10 p-1 text-white/80 hover:bg-white/20"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleInlineSearchSubmit} className="mb-3 flex gap-2">
+              <input
+                type="text"
+                value={searchQueryInput}
+                onChange={(e) => setSearchQueryInput(e.target.value)}
+                placeholder="Search any sad song or singer (उदा. Arijit Singh, KK, Sonu Nigam)..."
+                className="flex-1 rounded-xl border border-white/20 bg-black/60 px-3.5 py-2 text-xs text-white placeholder-white/40 focus:border-rose-400 focus:outline-none"
+              />
+              <button
+                type="submit"
+                disabled={isSearching}
+                className="rounded-xl bg-white text-black px-4 py-2 text-xs font-bold shadow-md transition-transform hover:scale-105 disabled:opacity-50"
+              >
+                {isSearching ? "Searching..." : "Search"}
+              </button>
+            </form>
+
+            <div className="max-h-80 overflow-y-auto space-y-1.5 pr-1">
+              {searchResults.length === 0 && !isSearching && (
+                <p className="text-center text-[11px] text-white/50 py-4">
+                  Type any sad song or artist name above to search live from YouTube Data API!
+                </p>
+              )}
+              {searchResults.map((song) => (
+                <div
+                  key={song.id}
+                  onClick={() => playDirectSong(song)}
+                  className="flex items-center justify-between rounded-xl border border-white/10 bg-white/5 px-3 py-2 cursor-pointer transition-all hover:bg-white/15 hover:border-rose-400/50"
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-rose-500/20 text-rose-400">
+                      <Music className="h-3.5 w-3.5" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="truncate text-xs font-bold text-white">{song.title}</p>
+                      <p className="truncate text-[10px] text-white/60">{song.artist}</p>
+                    </div>
+                  </div>
+                  <span className="rounded-full bg-rose-500/20 px-2 py-0.5 text-[10px] font-bold text-rose-300 shrink-0 ml-2">
+                    PLAY ▶
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Centered Creator Credit positioned comfortably above player bar */}
-        <div className="mb-1 flex items-center justify-center gap-1.5 text-xs text-white/95 drop-shadow-[0_2px_8px_rgba(0,0,0,0.8)] sm:text-xs">
+        <div className="mb-0.5 flex items-center justify-center gap-1.5 text-xs text-white/95 drop-shadow-[0_2px_8px_rgba(0,0,0,0.8)] sm:text-xs">
           <span className="inline-flex items-center gap-1 font-medium tracking-wide">
             Made with <Heart className="h-3.5 w-3.5 fill-rose-500 text-rose-500 animate-pulse" /> by
           </span>
@@ -446,13 +568,18 @@ export function JukeboxPlayer({ currentIndex, onTrackChange }: JukeboxPlayerProp
         </div>
 
         {/* Audio Player Bar */}
-        <div className="surface-glass flex w-[min(94vw,34rem)] items-center gap-3.5 rounded-full px-4 py-2.5 sm:px-5 sm:py-3 shadow-2xl backdrop-blur-2xl border border-white/15">
+        <div className="surface-glass flex w-[min(94vw,36rem)] items-center gap-3 rounded-full px-4 py-2.5 sm:px-5 sm:py-3 shadow-2xl backdrop-blur-2xl border border-white/15">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1.5">
-              <span className="h-2 w-2 shrink-0 rounded-full bg-primary animate-pulse" />
+              <span className="h-2 w-2 shrink-0 rounded-full bg-rose-500 animate-pulse" />
               <p className="truncate text-xs font-bold text-foreground sm:text-base">{currentTrack.title}</p>
             </div>
-            <p className="truncate text-[11px] text-muted-foreground sm:text-xs">{currentTrack.artist}</p>
+            <div className="flex items-center gap-2">
+              <p className="truncate text-[11px] text-muted-foreground sm:text-xs">{currentTrack.artist}</p>
+              <span className="rounded-full bg-white/10 px-2 py-0.5 text-[9px] font-bold text-rose-300 uppercase tracking-wider">
+                {catalog.length} Songs Stream
+              </span>
+            </div>
             
             <div
               onClick={seek}
@@ -460,7 +587,7 @@ export function JukeboxPlayer({ currentIndex, onTrackChange }: JukeboxPlayerProp
               role="presentation"
             >
               <div
-                className="h-full rounded-full bg-primary transition-[width] duration-300"
+                className="h-full rounded-full bg-rose-500 transition-[width] duration-300"
                 style={{ width: `${progress}%` }}
               />
             </div>
@@ -471,31 +598,43 @@ export function JukeboxPlayer({ currentIndex, onTrackChange }: JukeboxPlayerProp
           </div>
 
           <div className="flex shrink-0 items-center gap-0.5 sm:gap-1">
+            {/* Seamless Inline Within-Page Search Drawer Toggle */}
+            <button
+              onClick={() => setIsSearchExpanded((prev) => !prev)}
+              title="Search Any Hindi Sad Song on YouTube (कोई भी गाना खोजीं)"
+              className={`rounded-full p-1.5 sm:p-2 transition-all ${
+                isSearchExpanded
+                  ? "bg-rose-500 text-white scale-105 shadow-md"
+                  : "text-rose-400 hover:bg-rose-500/20 hover:scale-110"
+              }`}
+            >
+              <Search className="h-4 w-4 sm:h-4 sm:w-4" />
+            </button>
             <button
               onClick={shuffle}
               title="Random Unplayed Song (बिना रीपीट नया गाना)"
-              className="rounded-full p-1.5 sm:p-2 text-foreground/80 transition-colors hover:bg-white/10 hover:text-primary"
+              className="rounded-full p-1.5 sm:p-2 text-foreground/80 transition-colors hover:bg-white/10 hover:text-rose-400"
             >
               <Shuffle className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
             </button>
             <button
               onClick={prev}
               aria-label="Previous song"
-              className="rounded-full p-1.5 sm:p-2 text-foreground/80 transition-colors hover:bg-white/10 hover:text-primary"
+              className="rounded-full p-1.5 sm:p-2 text-foreground/80 transition-colors hover:bg-white/10 hover:text-rose-400"
             >
               <SkipBack className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
             </button>
             <button
               onClick={toggle}
               aria-label={playing ? "Pause" : "Play"}
-              className="grid h-10 w-10 sm:h-11 sm:w-11 place-items-center rounded-full bg-primary text-primary-foreground shadow-md transition-transform hover:scale-105 active:scale-95"
+              className="grid h-10 w-10 sm:h-11 sm:w-11 place-items-center rounded-full bg-rose-500 text-white shadow-md transition-transform hover:scale-105 active:scale-95"
             >
               {playing ? <Pause className="h-4 w-4 sm:h-5 sm:w-5" /> : <Play className="h-4 w-4 sm:h-5 sm:w-5 ml-0.5" />}
             </button>
             <button
               onClick={advanceToNextTrack}
               aria-label="Next song"
-              className="rounded-full p-1.5 sm:p-2 text-foreground/80 transition-colors hover:bg-white/10 hover:text-primary"
+              className="rounded-full p-1.5 sm:p-2 text-foreground/80 transition-colors hover:bg-white/10 hover:text-rose-400"
             >
               <SkipForward className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
             </button>
